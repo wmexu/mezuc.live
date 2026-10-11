@@ -1,2 +1,1 @@
-# mezuc.live
-Mezuc.live is an online streaming platform with accurate, modern design.
+Muzec.live - is a streaming platform, made for listening to music ad-free, in high quality. It uses Youtube Music API to stream songs. More updates coming soon! No need to authorize. Just open in your web and play. Easy, right?

@@ -18,6 +18,7 @@ export const TopBar: React.FC = () => {
   const loadUserAudioFile = usePlayerStore((s) => s.loadUserAudioFile);
   const setSelectedAlbumId = usePlayerStore((s) => s.setSelectedAlbumId);
   const setIsSettingsOpen = usePlayerStore((s) => s.setIsSettingsOpen);
+  const setSelectedArtist = usePlayerStore((s) => s.setSelectedArtist);
   const language = usePlayerStore((s) => s.language);
   const t = getTranslation(language);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -56,6 +57,7 @@ export const TopBar: React.FC = () => {
   }, [isMobileCollapsed]);
 
   const handleSearchFocus = () => {
+    setSelectedArtist(null);
     setActiveView("search");
   };
 
@@ -125,8 +127,11 @@ export const TopBar: React.FC = () => {
               type="text"
               value={searchQuery}
               onChange={(e) => {
-                setSearchQuery(e.target.value);
-                if (e.target.value.trim().length > 0) {
+                const val = e.target.value;
+                setSearchQuery(val);
+                if (val.trim().length > 0) {
+                  setSelectedArtist(null);
+                  setSelectedAlbumId(null);
                   setActiveView("search");
                 }
               }}

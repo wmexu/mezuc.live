@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import {
   Play,
@@ -16,12 +16,18 @@ import {
   Sparkles,
   Music2,
   Disc,
+  Check,
+  User,
+  Shuffle,
+  Disc3,
 } from "lucide-react";
 import { usePlayerStore } from "@/store/usePlayerStore";
 import { MOCK_TRACKS, MOCK_ALBUMS, Album } from "@/data/mockTracks";
 import { Track } from "@/types/player";
+import { Artist } from "@/lib/youtubeService";
 import { SpotlightCard } from "@/components/effects/SpotlightCard";
 import { JellyRadio } from "@/components/react-bits/JellyRadio";
+import { ArtistPageView } from "./ArtistPageView";
 import { getTranslation } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -55,6 +61,11 @@ export const MainViews: React.FC = () => {
   const loadUserAudioFile = usePlayerStore((s) => s.loadUserAudioFile);
   const selectedAlbumId = usePlayerStore((s) => s.selectedAlbumId);
   const setSelectedAlbumId = usePlayerStore((s) => s.setSelectedAlbumId);
+  const selectedArtist = usePlayerStore((s) => s.selectedArtist);
+  const setSelectedArtist = usePlayerStore((s) => s.setSelectedArtist);
+  const openArtist = usePlayerStore((s) => s.openArtist);
+  const openAlbum = usePlayerStore((s) => s.openAlbum);
+  const selectedAlbumMeta = usePlayerStore((s) => s.selectedAlbumMeta);
   const language = usePlayerStore((s) => s.language);
   const username = usePlayerStore((s) => s.username);
   const recentSearchAlbums = usePlayerStore((s) => s.recentSearchAlbums) || [];
@@ -67,11 +78,54 @@ export const MainViews: React.FC = () => {
   const [libraryTab, setLibraryTab] = useState<"queue" | "favorites">("queue");
   const [apiResults, setApiResults] = useState<Track[]>([]);
   const [apiAlbums, setApiAlbums] = useState<Album[]>([]);
+  const [apiArtists, setApiArtists] = useState<Artist[]>([]);
+  const [visibleAlbumsCount, setVisibleAlbumsCount] = useState(4);
+  const [visibleArtistsCount, setVisibleArtistsCount] = useState(4);
+  const [searchSongsPage, setSearchSongsPage] = useState(1);
+  const [isLoadingMoreSongs, setIsLoadingMoreSongs] = useState(false);
+  const songScrollTriggerRef = useRef<HTMLDivElement>(null);
+
+  // Artist Page Data State
+  const [artistData, setArtistData] = useState<{
+    artist: Artist;
+    songs: Track[];
+    albums: Album[];
+  } | null>(null);
+  const [isLoadingArtist, setIsLoadingArtist] = useState(false);
+  const [visibleArtistSongsCount, setVisibleArtistSongsCount] = useState(10);
+  const [visibleArtistAlbumsCount, setVisibleArtistAlbumsCount] = useState(6);
+  const [isArtistFollowing, setIsArtistFollowing] = useState(false);
+
   const [remoteAlbumData, setRemoteAlbumData] = useState<{ album: Album; tracks: Track[] } | null>(null);
   const [isLoadingAlbum, setIsLoadingAlbum] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [hasScrolledToPopular, setHasScrolledToPopular] = useState(false);
   const popularTriggerRef = useRef<HTMLDivElement>(null);
+
+  // Fetch Spotify-style Artist Page details when an artist is selected
+  useEffect(() => {
+    if (!selectedArtist) {
+      setArtistData(null);
+      setIsLoadingArtist(false);
+      return;
+    }
+
+    setArtistData(null);
+    setIsLoadingArtist(true);
+    setVisibleArtistSongsCount(10);
+    setVisibleArtistAlbumsCount(6);
+
+    const targetQuery = selectedArtist.name || selectedArtist.id || "";
+    fetch(`/api/music/artist/${encodeURIComponent(targetQuery)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.artist) {
+          setArtistData(data);
+        }
+      })
+      .catch((err) => console.warn("Failed to fetch artist details:", err))
+      .finally(() => setIsLoadingArtist(false));
+  }, [selectedArtist]);
 
   // Lazy load Popular catalog when scrolled to it on search page
   useEffect(() => {
@@ -90,17 +144,24 @@ export const MainViews: React.FC = () => {
     return () => observer.disconnect();
   }, [hasScrolledToPopular, activeView]);
 
-  // Live YouTube Music Search Debounce Effect (Both Songs & Albums)
+  // Live YouTube Music Search Debounce Effect (Songs, Albums, and Artists)
   useEffect(() => {
     const q = searchQuery.trim();
     if (!q) {
       setApiResults([]);
       setApiAlbums([]);
+      setApiArtists([]);
       setIsSearching(false);
+      setVisibleAlbumsCount(4);
+      setVisibleArtistsCount(4);
+      setSearchSongsPage(1);
       return;
     }
 
     setIsSearching(true);
+    setVisibleAlbumsCount(4);
+    setVisibleArtistsCount(4);
+    setSearchSongsPage(1);
     const timer = setTimeout(async () => {
       try {
         const res = await fetch(`/api/music/search?q=${encodeURIComponent(q)}&limit=25`);
@@ -108,6 +169,7 @@ export const MainViews: React.FC = () => {
           const data = await res.json();
           setApiResults(data.tracks || []);
           setApiAlbums(data.albums || []);
+          setApiArtists(data.artists || []);
         }
       } catch (err) {
         console.warn("YouTube live search failed:", err);
@@ -119,7 +181,54 @@ export const MainViews: React.FC = () => {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Remote Album Tracklist Fetcher
+  // Infinite Scroll Handler: Automatically load 20 more songs when user scrolls to bottom
+  const loadMoreSearchSongs = useCallback(async () => {
+    const q = searchQuery.trim();
+    if (!q || isLoadingMoreSongs) return;
+
+    setIsLoadingMoreSongs(true);
+    try {
+      const nextPage = searchSongsPage + 1;
+      const res = await fetch(
+        `/api/music/search?q=${encodeURIComponent(q)}&limit=20&page=${nextPage}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const incomingTracks: Track[] = data.tracks || [];
+        if (incomingTracks.length > 0) {
+          setApiResults((prev) => {
+            const seen = new Set(prev.map((t) => t.id));
+            const fresh = incomingTracks.filter((t) => !seen.has(t.id) && (seen.add(t.id), true));
+            return [...prev, ...fresh];
+          });
+          setSearchSongsPage(nextPage);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to load more songs:", err);
+    } finally {
+      setIsLoadingMoreSongs(false);
+    }
+  }, [searchQuery, isLoadingMoreSongs, searchSongsPage, apiResults]);
+
+  useEffect(() => {
+    if (activeView !== "search" || !searchQuery.trim()) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          loadMoreSearchSongs();
+        }
+      },
+      { rootMargin: "350px" }
+    );
+
+    if (songScrollTriggerRef.current) {
+      observer.observe(songScrollTriggerRef.current);
+    }
+    return () => observer.disconnect();
+  }, [activeView, searchQuery, loadMoreSearchSongs]);
+
+  // Remote Album Tracklist Fetcher (artist-aware to prevent same-name collisions)
   useEffect(() => {
     if (!selectedAlbumId) {
       setRemoteAlbumData(null);
@@ -127,10 +236,25 @@ export const MainViews: React.FC = () => {
       return;
     }
 
+    // Guard: Do not re-fetch if this album is already loaded into remoteAlbumData
+    if (
+      remoteAlbumData?.album &&
+      (remoteAlbumData.album.id === selectedAlbumId ||
+       remoteAlbumData.album.title.toLowerCase() === selectedAlbumId.toLowerCase())
+    ) {
+      return;
+    }
+
     setRemoteAlbumData(null);
     setIsLoadingAlbum(true);
 
-    fetch(`/api/music/album/${encodeURIComponent(selectedAlbumId)}`)
+    const metaArtist = selectedAlbumMeta?.artist;
+    const metaTitle = selectedAlbumMeta?.title;
+    const queryArtist = metaArtist
+      ? `?artist=${encodeURIComponent(metaArtist)}&title=${encodeURIComponent(metaTitle || "")}`
+      : "";
+
+    fetch(`/api/music/album/${encodeURIComponent(selectedAlbumId)}${queryArtist}`)
       .then((res) => res.json())
       .then((data) => {
         if (data && data.album && data.tracks && data.tracks.length > 0) {
@@ -153,8 +277,32 @@ export const MainViews: React.FC = () => {
 
   // Active album for Album Detail view
   const activeAlbum: Album = useMemo(() => {
-    if (remoteAlbumData?.album) return remoteAlbumData.album;
+    if (
+      remoteAlbumData?.album &&
+      (remoteAlbumData.album.id === selectedAlbumId ||
+       remoteAlbumData.album.title.toLowerCase() === (selectedAlbumId || "").toLowerCase())
+    ) {
+      return remoteAlbumData.album;
+    }
     if (!selectedAlbumId) return MOCK_ALBUMS[0];
+
+    // 1. Check recent search albums
+    const foundInRecent = recentSearchAlbums.find(
+      (a) =>
+        a.id.toLowerCase() === selectedAlbumId.toLowerCase() ||
+        a.title.toLowerCase() === selectedAlbumId.toLowerCase()
+    );
+    if (foundInRecent) return foundInRecent;
+
+    // 2. Check api search albums
+    const foundInApi = apiAlbums.find(
+      (a) =>
+        a.id.toLowerCase() === selectedAlbumId.toLowerCase() ||
+        a.title.toLowerCase() === selectedAlbumId.toLowerCase()
+    );
+    if (foundInApi) return foundInApi;
+
+    // 3. Check mock albums
     const found = MOCK_ALBUMS.find(
       (a) =>
         a.id.toLowerCase() === selectedAlbumId.toLowerCase() ||
@@ -162,10 +310,43 @@ export const MainViews: React.FC = () => {
         a.trackIds.includes(selectedAlbumId)
     );
     if (found) return found;
-    const foundInApi = apiAlbums.find((a) => a.id === selectedAlbumId);
-    if (foundInApi) return foundInApi;
-    return MOCK_ALBUMS[0];
-  }, [selectedAlbumId, remoteAlbumData, apiAlbums]);
+
+    // 4. Use selectedAlbumMeta
+    if (selectedAlbumMeta && selectedAlbumMeta.id === selectedAlbumId) {
+      const cleanTitle =
+        selectedAlbumMeta.title && !selectedAlbumMeta.title.startsWith("MPRE")
+          ? selectedAlbumMeta.title
+          : selectedAlbumMeta.artist
+          ? `${selectedAlbumMeta.artist} Album`
+          : "Album";
+      return {
+        id: selectedAlbumId,
+        title: cleanTitle,
+        artist: selectedAlbumMeta.artist || "Artist",
+        year: selectedAlbumMeta.year || "2024",
+        genre: "Album",
+        tracksCount: 1,
+        totalDuration: 1800,
+        coverUrl: selectedAlbumMeta.coverUrl || "",
+        notes: `${selectedAlbumMeta.artist || "Artist"} — ${cleanTitle}`,
+        trackIds: [],
+      };
+    }
+
+    const safeTitle = selectedAlbumId.startsWith("MPRE") ? "Album" : selectedAlbumId;
+    return {
+      id: selectedAlbumId,
+      title: safeTitle,
+      artist: "Artist",
+      year: "2024",
+      genre: "Album",
+      tracksCount: 1,
+      totalDuration: 1800,
+      coverUrl: "",
+      notes: safeTitle,
+      trackIds: [],
+    };
+  }, [selectedAlbumId, remoteAlbumData, recentSearchAlbums, apiAlbums, selectedAlbumMeta]);
 
   // Tracks for active album in Album Detail view
   const albumTracks = useMemo(() => {
@@ -186,14 +367,18 @@ export const MainViews: React.FC = () => {
   const searchResults = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     if (!q) return [];
-    if (apiResults.length > 0) return apiResults;
-    return MOCK_TRACKS.filter(
-      (t) =>
-        t.title.toLowerCase().includes(q) ||
-        t.artist.toLowerCase().includes(q) ||
-        t.album.toLowerCase().includes(q) ||
-        t.genre?.toLowerCase().includes(q)
-    );
+    const base =
+      apiResults.length > 0
+        ? apiResults
+        : MOCK_TRACKS.filter(
+            (t) =>
+              t.title.toLowerCase().includes(q) ||
+              t.artist.toLowerCase().includes(q) ||
+              t.album.toLowerCase().includes(q) ||
+              t.genre?.toLowerCase().includes(q)
+          );
+    const seen = new Set<string>();
+    return base.filter((t) => !seen.has(t.id) && (seen.add(t.id), true));
   }, [searchQuery, apiResults]);
 
   // Search filtered albums: live YouTube API results when searched (empty when search bar is empty)
@@ -209,6 +394,26 @@ export const MainViews: React.FC = () => {
     );
   }, [searchQuery, apiAlbums]);
 
+  // Search filtered artists: live YouTube API results with accent-insensitive matching
+  const searchArtistResults = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return [];
+    if (apiArtists.length > 0) return apiArtists;
+
+    const mockArtists: Artist[] = [
+      { id: "tame-impala", name: "Tame Impala", avatarUrl: MOCK_TRACKS[0].coverUrl, subscribers: "12M monthly listeners" },
+      { id: "arctic-monkeys", name: "Arctic Monkeys", avatarUrl: MOCK_TRACKS[1].coverUrl, subscribers: "35M monthly listeners" },
+      { id: "lady-gaga", name: "Lady Gaga & Bruno Mars", avatarUrl: MOCK_TRACKS[2].coverUrl, subscribers: "70M monthly listeners" },
+      { id: "djo", name: "Djo", avatarUrl: MOCK_TRACKS[3].coverUrl, subscribers: "18M monthly listeners" },
+      { id: "the-neighbourhood", name: "The Neighbourhood", avatarUrl: MOCK_TRACKS[4].coverUrl, subscribers: "25M monthly listeners" },
+      { id: "the-weeknd", name: "The Weeknd", avatarUrl: MOCK_TRACKS[5].coverUrl, subscribers: "110M monthly listeners" },
+      { id: "kendrick-lamar", name: "Kendrick Lamar", avatarUrl: MOCK_TRACKS[6].coverUrl, subscribers: "65M monthly listeners" },
+      { id: "daft-punk", name: "Daft Punk", avatarUrl: MOCK_TRACKS[2].coverUrl, subscribers: "22M monthly listeners" },
+      { id: "kaarija", name: "Käärijä", avatarUrl: "", subscribers: "3.2M monthly listeners" },
+    ];
+    return mockArtists.filter((a) => a.name.toLowerCase().includes(q));
+  }, [searchQuery, apiArtists]);
+
   // Favorite tracks
   const favoriteTracks = useMemo(() => {
     return MOCK_TRACKS.filter((t) => favorites.includes(t.id));
@@ -220,8 +425,18 @@ export const MainViews: React.FC = () => {
 
   return (
     <main className="max-w-7xl mx-auto px-4 sm:px-8 pt-[210px] sm:pt-28 pb-48 font-normal w-full overflow-x-hidden">
-      {/* VIEW 1: FLOW (DISCOVER / HOME or ALBUM DETAIL) */}
-      {activeView === "player" && (
+      {selectedArtist && activeView !== "search" ? (
+        <ArtistPageView
+          artist={selectedArtist}
+          onBack={() => setSelectedArtist(null)}
+          onOpenAlbum={(albumId, artistName, albumTitle, coverUrl, year) =>
+            openAlbum(albumId, artistName, albumTitle, coverUrl, year)
+          }
+        />
+      ) : (
+        <>
+          {/* VIEW 1: FLOW (DISCOVER / HOME or ALBUM DETAIL) */}
+          {activeView === "player" && (
         <>
           {/* BRANCH A: ALBUM DETAIL VIEW (When an album is opened) */}
           {selectedAlbumId ? (
@@ -254,7 +469,11 @@ export const MainViews: React.FC = () => {
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={activeAlbum.coverUrl}
-                        alt={activeAlbum.title}
+                        alt=""
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          (e.currentTarget as HTMLElement).style.opacity = "0";
+                        }}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                       />
                       <div className="absolute inset-0 bg-black/30 group-hover:bg-black/10 transition-colors" />
@@ -470,7 +689,16 @@ export const MainViews: React.FC = () => {
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
                                 src={track.coverUrl}
-                                alt={track.title}
+                                alt=""
+                                referrerPolicy="no-referrer"
+                                onError={(e) => {
+                                  const target = e.currentTarget;
+                                  if (track.youtubeId && !target.src.includes("i.ytimg.com")) {
+                                    target.src = `https://i.ytimg.com/vi/${track.youtubeId}/hqdefault.jpg`;
+                                  } else {
+                                    target.style.opacity = "0";
+                                  }
+                                }}
                                 className="w-full h-full object-cover"
                               />
                             </div>
@@ -608,7 +836,16 @@ export const MainViews: React.FC = () => {
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={track.coverUrl}
-                          alt={track.title}
+                          alt=""
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            const target = e.currentTarget;
+                            if (track.youtubeId && !target.src.includes("i.ytimg.com")) {
+                              target.src = `https://i.ytimg.com/vi/${track.youtubeId}/hqdefault.jpg`;
+                            } else {
+                              target.style.opacity = "0";
+                            }
+                          }}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                         />
                       </div>
@@ -696,7 +933,7 @@ export const MainViews: React.FC = () => {
                       </button>
 
                       <button
-                        onClick={() => setSelectedAlbumId(MOCK_ALBUMS[0].id)}
+                        onClick={() => openAlbum(MOCK_ALBUMS[0].id, MOCK_ALBUMS[0].artist, MOCK_ALBUMS[0].title, MOCK_ALBUMS[0].coverUrl, MOCK_ALBUMS[0].year)}
                         className="px-4 py-2.5 rounded-full matte-glass text-foreground text-xs hover:bg-foreground/10 transition-colors border border-border cursor-pointer font-normal"
                       >
                         {t.openAlbum}
@@ -754,7 +991,11 @@ export const MainViews: React.FC = () => {
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
                               src={mix.coverUrl}
-                              alt={mix.title}
+                              alt=""
+                              referrerPolicy="no-referrer"
+                              onError={(e) => {
+                                (e.currentTarget as HTMLElement).style.opacity = "0";
+                              }}
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                             />
                             <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded text-[9px] font-medium bg-foreground text-background">
@@ -806,7 +1047,11 @@ export const MainViews: React.FC = () => {
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={album.coverUrl}
-                          alt={album.title}
+                          alt=""
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLElement).style.opacity = "0";
+                          }}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                         />
 
@@ -883,7 +1128,11 @@ export const MainViews: React.FC = () => {
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={artist.coverUrl}
-                          alt={artist.name}
+                          alt=""
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLElement).style.opacity = "0";
+                          }}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 rounded-full"
                         />
 
@@ -970,8 +1219,8 @@ export const MainViews: React.FC = () => {
             </p>
           </div>
 
-          {/* Search Category Tiles */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          {/* Search Category Tiles: 2 horizontal lines on mobile with touch swipe, standard 4 cols on desktop */}
+          <div className="grid grid-rows-2 grid-flow-col auto-cols-[minmax(160px,180px)] sm:auto-cols-auto sm:grid-flow-row sm:grid-rows-none sm:grid-cols-4 gap-2.5 sm:gap-4 overflow-x-auto sm:overflow-x-visible no-scrollbar overscroll-x-contain touch-pan-x -mx-4 px-4 sm:mx-0 sm:px-0 pb-1">
             {[
               { label: "Top Global Hits", query: "Top Hits 2025" },
               { label: "The Weeknd & R&B", query: "The Weeknd" },
@@ -985,7 +1234,7 @@ export const MainViews: React.FC = () => {
               <SpotlightCard
                 key={cat.label}
                 onClick={() => setSearchQuery(cat.query)}
-                className="cursor-pointer p-4 matte-glass border border-border hover:border-foreground/20 transition-all"
+                className="cursor-pointer p-4 matte-glass border border-border hover:border-foreground/20 transition-all shrink-0 select-none"
               >
                 <div className="text-sm text-foreground font-normal">
                   {cat.label}
@@ -1002,23 +1251,59 @@ export const MainViews: React.FC = () => {
           {/* ============================================================ */}
           {searchQuery.trim().length > 0 ? (
             <>
-              {/* Albums Search Results Row */}
-              {searchAlbumResults.length > 0 && (
+              {/* Albums and Artists Search Results Mixed Section */}
+              {(searchAlbumResults.length > 0 || searchArtistResults.length > 0) && (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border pb-2 font-normal">
                     <div className="flex items-center gap-2">
                       <Disc className="w-3.5 h-3.5" />
-                      <span>Albums ({searchAlbumResults.length})</span>
+                      <span>Albums and Artists ({searchAlbumResults.length + searchArtistResults.length})</span>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
-                    {searchAlbumResults.map((album) => (
+                    {/* First 4 (or visible count) Artists: Circular Avatar with +100 font-weight on name (font-semibold) */}
+                    {searchArtistResults.slice(0, visibleArtistsCount).map((artist, idx) => (
                       <SpotlightCard
-                        key={`search-album-${album.id}`}
+                        key={`search-artist-${artist.id || artist.name}-${idx}`}
+                        onClick={() => openArtist(artist.name, artist.avatarUrl, artist.id)}
+                        className="cursor-pointer group p-3 rounded-xl matte-glass border border-border hover:border-foreground/25 transition-all flex flex-col justify-between"
+                      >
+                        <div className="relative aspect-square rounded-full overflow-hidden bg-black/40 border border-white/10 mb-2.5 shadow-md mx-auto w-full flex items-center justify-center">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          {artist.avatarUrl ? (
+                            <img
+                              src={artist.avatarUrl}
+                              alt=""
+                              referrerPolicy="no-referrer"
+                              onError={(e) => {
+                                (e.currentTarget as HTMLElement).style.display = "none";
+                              }}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 rounded-full"
+                            />
+                          ) : null}
+                          <User className="w-8 h-8 text-muted-foreground/30 absolute pointer-events-none -z-0" />
+                          <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded text-[8px] font-medium bg-foreground text-background">
+                            Artist
+                          </div>
+                        </div>
+                        <div>
+                          <h5 className="text-xs font-semibold text-foreground truncate">
+                            {artist.name}
+                          </h5>
+                          <p className="text-[11px] text-muted-foreground truncate mt-0.5">
+                            {artist.subscribers || "Verified Artist"}
+                          </p>
+                        </div>
+                      </SpotlightCard>
+                    ))}
+
+                    {/* First 4 (or visible count) Albums: Standard Album Card */}
+                    {searchAlbumResults.slice(0, visibleAlbumsCount).map((album, idx) => (
+                      <SpotlightCard
+                        key={`search-album-${album.id}-${idx}`}
                         onClick={() => {
                           addRecentSearchAlbum(album);
-                          setSelectedAlbumId(album.id);
-                          setActiveView("player");
+                          openAlbum(album.id, album.artist, album.title, album.coverUrl, album.year);
                         }}
                         className="cursor-pointer group p-3 rounded-xl matte-glass border border-border hover:border-foreground/25 transition-all flex flex-col justify-between"
                       >
@@ -1026,7 +1311,11 @@ export const MainViews: React.FC = () => {
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={album.coverUrl}
-                            alt={album.title}
+                            alt=""
+                            referrerPolicy="no-referrer"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLElement).style.display = "none";
+                            }}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                           />
                           <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded text-[8px] font-medium bg-foreground text-background">
@@ -1046,6 +1335,26 @@ export const MainViews: React.FC = () => {
                         </div>
                       </SpotlightCard>
                     ))}
+                  </div>
+
+                  {/* Buttons at the end of the mixed Albums and Artists list: text only, no background */}
+                  <div className="flex items-center gap-5 pt-2">
+                    {visibleAlbumsCount < searchAlbumResults.length && (
+                      <button
+                        onClick={() => setVisibleAlbumsCount((prev) => prev + 8)}
+                        className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer bg-transparent border-none p-0 inline-flex items-center font-normal"
+                      >
+                        Load more Albums
+                      </button>
+                    )}
+                    {visibleArtistsCount < searchArtistResults.length && (
+                      <button
+                        onClick={() => setVisibleArtistsCount((prev) => prev + 8)}
+                        className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer bg-transparent border-none p-0 inline-flex items-center font-semibold"
+                      >
+                        Load more Artists
+                      </button>
+                    )}
                   </div>
                 </div>
               )}
@@ -1071,9 +1380,9 @@ export const MainViews: React.FC = () => {
                 </div>
 
                 <div className="space-y-1">
-                  {searchResults.map((track) => (
+                  {searchResults.map((track, idx) => (
                     <div
-                      key={`search-${track.id}`}
+                      key={`search-${track.id}-${idx}`}
                       onClick={() => {
                         addRecentSearchTrack(track);
                         playTrack(track, searchResults);
@@ -1085,7 +1394,11 @@ export const MainViews: React.FC = () => {
                           {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={track.coverUrl}
-                            alt={track.title}
+                            alt=""
+                            referrerPolicy="no-referrer"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLElement).style.display = "none";
+                            }}
                             className="w-full h-full object-cover"
                           />
                         </div>
@@ -1127,6 +1440,20 @@ export const MainViews: React.FC = () => {
                     </div>
                   ))}
                 </div>
+
+                {/* Infinite Scroll Trigger for Search Songs */}
+                <div ref={songScrollTriggerRef} className="py-4 text-center">
+                  {isLoadingMoreSongs ? (
+                    <span className="text-xs text-muted-foreground font-semibold inline-flex items-center gap-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-foreground" />
+                      <span>Loading..</span>
+                    </span>
+                  ) : searchResults.length >= 20 ? (
+                    <span className="text-xs text-muted-foreground font-semibold">
+                      Loading..
+                    </span>
+                  ) : null}
+                </div>
               </div>
             </>
           ) : (
@@ -1162,8 +1489,7 @@ export const MainViews: React.FC = () => {
                             key={`recent-album-${album.id}-${idx}`}
                             onClick={() => {
                               addRecentSearchAlbum(album);
-                              setSelectedAlbumId(album.id);
-                              setActiveView("player");
+                              openAlbum(album.id, album.artist, album.title, album.coverUrl, album.year);
                             }}
                             className={cn(
                               "cursor-pointer group p-3 rounded-xl matte-glass border border-border hover:border-foreground/25 transition-all flex flex-col justify-between",
@@ -1174,7 +1500,11 @@ export const MainViews: React.FC = () => {
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
                                 src={album.coverUrl}
-                                alt={album.title}
+                                alt=""
+                                referrerPolicy="no-referrer"
+                                onError={(e) => {
+                                  (e.currentTarget as HTMLElement).style.opacity = "0";
+                                }}
                                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                               />
                               <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded text-[8px] font-medium bg-foreground text-background">
@@ -1219,7 +1549,16 @@ export const MainViews: React.FC = () => {
                                 {/* eslint-disable-next-line @next/next/no-img-element */}
                                 <img
                                   src={track.coverUrl}
-                                  alt={track.title}
+                                  alt=""
+                                  referrerPolicy="no-referrer"
+                                  onError={(e) => {
+                                    const target = e.currentTarget;
+                                    if (track.youtubeId && !target.src.includes("i.ytimg.com")) {
+                                      target.src = `https://i.ytimg.com/vi/${track.youtubeId}/hqdefault.jpg`;
+                                    } else {
+                                      target.style.opacity = "0";
+                                    }
+                                  }}
                                   className="w-full h-full object-cover"
                                 />
                               </div>
@@ -1284,8 +1623,7 @@ export const MainViews: React.FC = () => {
                             key={`popular-album-${album.id}-${idx}`}
                             onClick={() => {
                               addRecentSearchAlbum(album);
-                              setSelectedAlbumId(album.id);
-                              setActiveView("player");
+                              openAlbum(album.id, album.artist, album.title, album.coverUrl, album.year);
                             }}
                             className={cn(
                               "cursor-pointer group p-3 rounded-xl matte-glass border border-border hover:border-foreground/25 transition-all flex flex-col justify-between",
@@ -1296,7 +1634,11 @@ export const MainViews: React.FC = () => {
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
                                 src={album.coverUrl}
-                                alt={album.title}
+                                alt=""
+                                referrerPolicy="no-referrer"
+                                onError={(e) => {
+                                  (e.currentTarget as HTMLElement).style.opacity = "0";
+                                }}
                                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                               />
                               <div className="absolute top-2 right-2 px-1.5 py-0.5 rounded text-[8px] font-medium bg-foreground text-background">
@@ -1671,6 +2013,8 @@ export const MainViews: React.FC = () => {
             &ldquo;{currentTrack.notes}&rdquo;
           </p>
         </section>
+      )}
+        </>
       )}
     </main>
   );

@@ -56,6 +56,8 @@ export const BottomPlayer: React.FC = () => {
   const openLyricsModal = usePlayerStore((s) => s.openLyricsModal);
   const openFullscreenModal = usePlayerStore((s) => s.openFullscreenModal);
   const setActiveView = usePlayerStore((s) => s.setActiveView);
+  const openArtist = usePlayerStore((s) => s.openArtist);
+  const openAlbum = usePlayerStore((s) => s.openAlbum);
   const language = usePlayerStore((s) => s.language);
   const t = getTranslation(language);
 
@@ -100,7 +102,16 @@ export const BottomPlayer: React.FC = () => {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={currentTrack.coverUrl}
-              alt={currentTrack.title}
+              alt=""
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (currentTrack.youtubeId && !target.src.includes("i.ytimg.com")) {
+                  target.src = `https://i.ytimg.com/vi/${currentTrack.youtubeId}/hqdefault.jpg`;
+                } else {
+                  target.style.opacity = "0";
+                }
+              }}
               className="w-full h-full object-cover"
             />
           </div>
@@ -186,7 +197,16 @@ export const BottomPlayer: React.FC = () => {
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={currentTrack.coverUrl}
-                alt={currentTrack.title}
+                alt=""
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  const target = e.currentTarget;
+                  if (currentTrack.youtubeId && !target.src.includes("i.ytimg.com")) {
+                    target.src = `https://i.ytimg.com/vi/${currentTrack.youtubeId}/hqdefault.jpg`;
+                  } else {
+                    target.style.opacity = "0";
+                  }
+                }}
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
               />
               <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
@@ -206,13 +226,31 @@ export const BottomPlayer: React.FC = () => {
                 <MarqueeText text={currentTrack.title} />
               </button>
               <p
-                className="text-xs text-muted-foreground truncate font-normal"
+                className="text-xs text-muted-foreground truncate font-normal flex items-center"
                 style={{
                   fontFamily: "var(--font-geist-sans), sans-serif",
                   fontWeight: 400,
                 }}
               >
-                {currentTrack.artist}
+                <button
+                  onClick={() => openArtist(currentTrack.artist)}
+                  className="hover:text-foreground hover:underline transition-colors cursor-pointer text-left truncate max-w-[130px]"
+                  title={`View Artist: ${currentTrack.artist}`}
+                >
+                  {currentTrack.artist}
+                </button>
+                {currentTrack.album && (
+                  <>
+                    <span className="opacity-40 select-none mx-1">—</span>
+                    <button
+                      onClick={() => openAlbum(currentTrack.album, currentTrack.artist, currentTrack.title)}
+                      className="hover:text-foreground hover:underline transition-colors cursor-pointer text-left truncate max-w-[130px]"
+                      title={`View Album: ${currentTrack.album}`}
+                    >
+                      {currentTrack.album}
+                    </button>
+                  </>
+                )}
               </p>
             </div>
 

@@ -14,6 +14,7 @@ export const metadata: Metadata = {
   title: "muzec.live — Minimalist Pure-Black Monochromatic Music Player",
   description:
     "A clean, hyper-minimalist, Spotify-inspired monochromatic music player web application. Pure OLED black, liquid motion physics, and lossless sound.",
+  referrer: "no-referrer",
   keywords: [
     "muzec",
     "minimalist music player",
@@ -43,6 +44,9 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} dark h-full antialiased`}
     >
+      <head>
+        <meta name="referrer" content="no-referrer" />
+      </head>
       <body className="min-h-full bg-background text-foreground selection:bg-foreground selection:text-background antialiased overflow-x-hidden font-normal">
         {/* OLED banding eliminator: Subtle 3.5% noise layer */}
         <div

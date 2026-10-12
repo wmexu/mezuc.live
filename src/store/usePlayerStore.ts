@@ -26,6 +26,7 @@ interface PlayerState {
   selectedTag: string;
   isExpandedPlayer: boolean;
   selectedAlbumId: string | null;
+  selectedAlbumMeta: { id: string; title?: string; artist?: string; coverUrl?: string; year?: string } | null;
   theme: "dark" | "light";
   customAccentColor: string | null;
   language: Language;
@@ -35,12 +36,16 @@ interface PlayerState {
   isLyricsModalOpen: boolean;
   recentSearchAlbums: Album[];
   recentSearchTracks: Track[];
+  selectedArtist: { id?: string; name: string; avatarUrl?: string } | null;
 
   // Actions
   setIsLyricsModalOpen: (open: boolean) => void;
   openLyricsModal: () => void;
   openFullscreenModal: () => void;
   closeModals: () => void;
+  openArtist: (artistName: string, avatarUrl?: string, artistId?: string) => void;
+  openAlbum: (albumIdOrTitle: string, artist?: string, albumTitle?: string, coverUrl?: string, year?: string) => void;
+  setSelectedArtist: (artist: { id?: string; name: string; avatarUrl?: string } | null) => void;
   addRecentSearchAlbum: (album: Album) => void;
   addRecentSearchTrack: (track: Track) => void;
   clearSearchHistory: () => void;
@@ -126,8 +131,19 @@ export const usePlayerStore = create<PlayerState>()(
                 }
               }
             }
+          },
+          (playing: boolean) => {
+            set({ isPlaying: playing });
           }
         );
+
+        audioEngine.initMediaSessionHandlers({
+          onPlay: () => get().togglePlay(),
+          onPause: () => get().pause(),
+          onPrev: () => get().prevTrack(),
+          onNext: () => get().nextTrack(),
+          onSeek: (time: number) => get().seekTo(time),
+        });
       }
 
       return {
@@ -148,6 +164,8 @@ export const usePlayerStore = create<PlayerState>()(
         selectedTag: "ALL",
         isExpandedPlayer: false,
         selectedAlbumId: null,
+        selectedAlbumMeta: null,
+        selectedArtist: null,
         theme: "dark",
         customAccentColor: null,
         language: "en",
@@ -162,6 +180,30 @@ export const usePlayerStore = create<PlayerState>()(
         openLyricsModal: () => set({ isExpandedPlayer: true, isLyricsModalOpen: true }),
         openFullscreenModal: () => set({ isExpandedPlayer: true, isLyricsModalOpen: false }),
         closeModals: () => set({ isExpandedPlayer: false, isLyricsModalOpen: false }),
+
+        openArtist: (artistName: string, avatarUrl?: string, artistId?: string) => {
+          set({
+            selectedArtist: { id: artistId, name: artistName, avatarUrl },
+            selectedAlbumId: null,
+            selectedAlbumMeta: null,
+            isExpandedPlayer: false,
+            isLyricsModalOpen: false,
+            activeView: "player",
+          });
+        },
+
+        openAlbum: (albumIdOrTitle: string, artist?: string, albumTitle?: string, coverUrl?: string, year?: string) => {
+          set({
+            selectedArtist: null,
+            selectedAlbumId: albumIdOrTitle,
+            selectedAlbumMeta: { id: albumIdOrTitle, title: albumTitle, artist, coverUrl, year },
+            isExpandedPlayer: false,
+            isLyricsModalOpen: false,
+            activeView: "player",
+          });
+        },
+
+        setSelectedArtist: (artist) => set({ selectedArtist: artist }),
 
         addRecentSearchAlbum: (album: Album) => {
           const existing = (get().recentSearchAlbums || []).filter((a) => a.id !== album.id);

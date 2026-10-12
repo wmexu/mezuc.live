@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   X,
@@ -68,6 +68,16 @@ export const ExpandedPlayerModal: React.FC = () => {
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle);
   const toggleRepeat = usePlayerStore((s) => s.toggleRepeat);
   const toggleFavorite = usePlayerStore((s) => s.toggleFavorite);
+  const openArtist = usePlayerStore((s) => s.openArtist);
+  const openAlbum = usePlayerStore((s) => s.openAlbum);
+
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 640);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   const viewMode = isLyricsModalOpen ? "lyrics" : "player";
   const setViewMode = (mode: "player" | "lyrics") => setIsLyricsModalOpen(mode === "lyrics");
@@ -155,26 +165,64 @@ export const ExpandedPlayerModal: React.FC = () => {
     return idx;
   }, [lyrics, currentTime]);
 
+  // Smooth scroll container to position the active lyric line at ~40% from top
+  // (leaving ~60% height below it, slightly above center, matching Spotify exactly)
+  const scrollToActiveLine = useCallback(() => {
+    setIsUserScrolled(false);
+    const container = lyricsContainerRef.current;
+    if (!container) return;
+    const activeEl =
+      (container.querySelector('[data-active="true"]') as HTMLElement) ||
+      activeLineRef.current;
+    if (activeEl) {
+      const containerRect = container.getBoundingClientRect();
+      const activeRect = activeEl.getBoundingClientRect();
+      const relativeTop = activeRect.top - containerRect.top;
+      const targetOffset = container.clientHeight * 0.40 - activeRect.height / 2;
+      const delta = relativeTop - targetOffset;
+      container.scrollTo({
+        top: container.scrollTop + delta,
+        behavior: "smooth",
+      });
+    } else {
+      container.scrollTo({
+        top: 0,
+        behavior: "smooth",
+      });
+    }
+  }, []);
+
   // Auto-scroll to active lyric line unless user manually scrolled
   useEffect(() => {
     if (viewMode !== "lyrics" || isUserScrolled || activeLineIndex === -1) return;
-    if (activeLineRef.current) {
-      activeLineRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
+    const container = lyricsContainerRef.current;
+    if (!container) return;
+    const activeEl =
+      (container.querySelector('[data-active="true"]') as HTMLElement) ||
+      activeLineRef.current;
+    if (activeEl) {
+      const containerRect = container.getBoundingClientRect();
+      const activeRect = activeEl.getBoundingClientRect();
+      const relativeTop = activeRect.top - containerRect.top;
+      const targetOffset = container.clientHeight * 0.40 - activeRect.height / 2;
+      const delta = relativeTop - targetOffset;
+      if (Math.abs(delta) > 4) {
+        container.scrollTo({
+          top: container.scrollTop + delta,
+          behavior: "smooth",
+        });
+      }
     }
   }, [activeLineIndex, viewMode, isUserScrolled]);
 
-  const scrollToActiveLine = () => {
-    setIsUserScrolled(false);
-    if (activeLineRef.current) {
-      activeLineRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
+  // When switching to lyrics mode, auto-scroll immediately to current active line
+  useEffect(() => {
+    if (viewMode === "lyrics" && activeLineIndex !== -1) {
+      setIsUserScrolled(false);
+      const timer = setTimeout(scrollToActiveLine, 100);
+      return () => clearTimeout(timer);
     }
-  };
+  }, [viewMode, scrollToActiveLine, activeLineIndex]);
 
   if (!isExpandedPlayer || !currentTrack) return null;
 
@@ -187,48 +235,58 @@ export const ExpandedPlayerModal: React.FC = () => {
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.98 }}
         transition={{ type: "spring", stiffness: 320, damping: 28 }}
-        className="fixed inset-0 z-50 bg-black/40 dark:bg-black/45 backdrop-blur-[48px] flex flex-col justify-between p-3 sm:p-8 overflow-y-auto sm:overflow-hidden font-normal select-none"
+        className="fixed inset-0 z-50 bg-black/40 dark:bg-black/45 backdrop-blur-[48px] flex flex-col justify-between p-3 sm:p-8 overflow-y-auto sm:overflow-hidden font-normal select-none w-full max-w-full overflow-x-hidden"
       >
         {/* Top Header Floating Matte Panel */}
-        <div className="matte-glass backdrop-blur-[48px] rounded-full sm:rounded-2xl border border-border px-3 sm:px-8 py-2.5 sm:py-3 max-w-4xl w-full mx-auto flex items-center justify-between shadow-2xl shrink-0 z-20">
-          {/* PC only: muzec.live branding indicator (hidden on mobile) */}
-          <div className="hidden sm:flex items-center gap-2.5">
+        <div className="matte-glass backdrop-blur-[48px] rounded-full sm:rounded-2xl border border-border px-3 sm:px-8 py-2 sm:py-2.5 max-w-4xl w-full mx-auto flex items-center justify-between shadow-2xl shrink-0 z-20 gap-2 overflow-hidden box-border">
+          {/* PC & Mobile branding indicator */}
+          <div className="flex items-center gap-2.5 shrink-0">
             <span className="w-2 h-2 rounded-full bg-foreground animate-pulse" />
-            <span className="text-xs tracking-widest text-muted-foreground font-normal">
+            <span className="text-xs tracking-widest text-muted-foreground font-normal hidden sm:inline">
               muzec.live
             </span>
           </div>
 
           {/* Quality Selector & Close button */}
-          <div className="flex items-center justify-between sm:justify-end w-full sm:w-auto gap-2 sm:gap-4">
-            <JellyRadio
-              items={[
-                { value: "normal", label: "Normal 320k" },
-                { value: "high", label: "High 24-bit" },
-                { value: "lossless", label: "Lossless 96kHz" },
-              ]}
-              value={quality}
-              onChange={(val) => setQuality(val as AudioQuality)}
-              size="sm"
-              gap={4}
-              radius={16}
-              swell={0.08}
-              barge={2}
-              shrink={0.04}
-              jelly={0.8}
-              bounce={0.2}
-              stagger={16}
-              stiffness={580}
-            />
+          <div className="flex items-center justify-end gap-1.5 sm:gap-3 shrink-0">
+            <div className="shrink-0 overflow-hidden scale-90 sm:scale-100 origin-right">
+              <JellyRadio
+                items={
+                  isMobile
+                    ? [
+                        { value: "normal", label: "320k" },
+                        { value: "high", label: "24-bit" },
+                        { value: "lossless", label: "Lossless" },
+                      ]
+                    : [
+                        { value: "normal", label: "Normal 320k" },
+                        { value: "high", label: "High 24-bit" },
+                        { value: "lossless", label: "Lossless 96kHz" },
+                      ]
+                }
+                value={quality}
+                onChange={(val) => setQuality(val as AudioQuality)}
+                size="sm"
+                gap={isMobile ? 2 : 4}
+                radius={16}
+                swell={0.08}
+                barge={2}
+                shrink={0.04}
+                jelly={0.8}
+                bounce={0.2}
+                stagger={16}
+                stiffness={580}
+              />
+            </div>
             <button
               onClick={() => {
                 setIsExpandedPlayer(false);
                 setIsLyricsModalOpen(false);
               }}
-              className="p-1.5 sm:p-2 rounded-full matte-glass text-muted-foreground hover:text-foreground transition-colors flex items-center justify-center border border-border cursor-pointer shrink-0"
+              className="w-7 h-7 sm:w-9 sm:h-9 rounded-full matte-glass text-muted-foreground hover:text-foreground transition-colors flex items-center justify-center border border-border cursor-pointer shrink-0"
               aria-label="Close modal"
             >
-              <X className="w-4 h-4 sm:w-5 sm:h-5" />
+              <X className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
             </button>
           </div>
         </div>
@@ -240,12 +298,26 @@ export const ExpandedPlayerModal: React.FC = () => {
           <>
             {/* Center: Large Floating Matte Card with Homepage Glass Reference */}
             <div className="matte-glass backdrop-blur-[48px] rounded-3xl border border-white/10 p-4 sm:p-10 max-w-xl w-full mx-auto text-center flex flex-col items-center justify-center space-y-3 sm:space-y-6 shadow-[0_25px_60px_rgba(0,0,0,0.5)] my-auto shrink-0">
-              <div className="relative w-36 h-36 sm:w-72 sm:h-72 rounded-2xl overflow-hidden bg-black/40 border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.5)] shrink-0">
+              {/* Clickable album cover navigating to album */}
+              <div
+                onClick={() => openAlbum(currentTrack.album, currentTrack.artist, currentTrack.title, currentTrack.coverUrl, currentTrack.year)}
+                title={`Open Album: ${currentTrack.album}`}
+                className="relative w-36 h-36 sm:w-72 sm:h-72 rounded-2xl overflow-hidden bg-black/40 border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.5)] shrink-0 cursor-pointer group hover:border-white/40 transition-colors"
+              >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={currentTrack.coverUrl}
-                  alt={currentTrack.title}
-                  className="w-full h-full object-cover"
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    if (currentTrack.youtubeId && !target.src.includes("i.ytimg.com")) {
+                      target.src = `https://i.ytimg.com/vi/${currentTrack.youtubeId}/hqdefault.jpg`;
+                    } else {
+                      target.style.opacity = "0";
+                    }
+                  }}
+                  className="w-full h-full object-cover group-hover:scale-102 transition-transform duration-300"
                 />
               </div>
 
@@ -279,9 +351,24 @@ export const ExpandedPlayerModal: React.FC = () => {
                   </button>
                 </div>
 
-                <p className="text-xs sm:text-sm text-muted-foreground font-normal truncate max-w-sm">
-                  {currentTrack.artist} — {currentTrack.album}
-                </p>
+                {/* Clickable Artist and Album Names */}
+                <div className="flex items-center justify-center gap-1.5 text-xs sm:text-sm text-muted-foreground font-normal truncate max-w-sm px-2">
+                  <button
+                    onClick={() => openArtist(currentTrack.artist)}
+                    title={`View Artist: ${currentTrack.artist}`}
+                    className="hover:text-foreground hover:underline transition-colors cursor-pointer truncate max-w-[150px]"
+                  >
+                    {currentTrack.artist}
+                  </button>
+                  <span className="opacity-40 select-none shrink-0">—</span>
+                  <button
+                    onClick={() => openAlbum(currentTrack.album, currentTrack.artist, currentTrack.title, currentTrack.coverUrl, currentTrack.year)}
+                    title={`View Album: ${currentTrack.album}`}
+                    className="hover:text-foreground hover:underline transition-colors cursor-pointer truncate max-w-[150px]"
+                  >
+                    {currentTrack.album}
+                  </button>
+                </div>
               </div>
 
               {/* Scrubber */}
@@ -416,7 +503,7 @@ export const ExpandedPlayerModal: React.FC = () => {
         {/* VIEW 2: SPOTIFY-STYLE SYNCHRONIZED LYRICS VIEW               */}
         {/* ============================================================ */}
         {viewMode === "lyrics" && (
-          <div className="flex-1 flex flex-col justify-between max-w-3xl w-full mx-auto my-3 relative overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col justify-between max-w-3xl w-full mx-auto my-3 relative overflow-hidden">
             {/* Song Meta Minimal Indicator */}
             <div className="text-center pt-2 pb-1 shrink-0">
               <h3
@@ -435,12 +522,14 @@ export const ExpandedPlayerModal: React.FC = () => {
               ref={lyricsContainerRef}
               onWheel={() => setIsUserScrolled(true)}
               onTouchMove={() => setIsUserScrolled(true)}
-              className="flex-1 overflow-y-auto px-4 sm:px-12 py-12 space-y-7 text-center scroll-smooth no-scrollbar"
+              className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-12 space-y-7 text-center no-scrollbar relative"
               style={{
                 maskImage:
                   "linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)",
                 WebkitMaskImage:
                   "linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)",
+                paddingTop: "calc(38vh - 40px)",
+                paddingBottom: "calc(55vh - 40px)",
               }}
             >
               {isLoadingLyrics ? (
@@ -467,7 +556,12 @@ export const ExpandedPlayerModal: React.FC = () => {
                     <motion.div
                       key={`line-${idx}-${line.time}`}
                       ref={isActive ? activeLineRef : null}
-                      onClick={() => seekTo(line.time)}
+                      data-active={isActive ? "true" : undefined}
+                      onClick={() => {
+                        seekTo(line.time);
+                        setIsUserScrolled(false);
+                        setTimeout(scrollToActiveLine, 40);
+                      }}
                       className={cn(
                         "transition-all duration-300 cursor-pointer select-none py-1",
                         isActive

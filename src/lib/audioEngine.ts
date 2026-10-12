@@ -20,6 +20,12 @@ class AudioEngine {
   private synthInterval: NodeJS.Timeout | null = null;
   private onTimeUpdateCallback: ((time: number) => void) | null = null;
   private onEndedCallback: (() => void) | null = null;
+  private onPlayStateChangeCallback: ((isPlaying: boolean) => void) | null = null;
+
+  // Background audio keeper for iOS / Android background playback
+  private bgAudioKeeper: HTMLAudioElement | null = null;
+  private userPaused: boolean = false;
+  private timeTrackingInterval: NodeJS.Timeout | null = null;
 
   // YouTube IFrame Player integration
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -36,6 +42,49 @@ class AudioEngine {
   constructor() {
     if (typeof window !== "undefined") {
       this.initYouTubeApi();
+      this.initBackgroundAudioKeeper();
+      this.initVisibilityListener();
+    }
+  }
+
+  private initVisibilityListener() {
+    if (typeof document === "undefined") return;
+    document.addEventListener("visibilitychange", () => {
+      if (!this.userPaused && this.isRunning) {
+        if (this.currentSource === "youtube" && this.ytPlayer && typeof this.ytPlayer.playVideo === "function") {
+          try {
+            this.ytPlayer.playVideo();
+          } catch {}
+        }
+        this.startBackgroundAudioKeeper();
+      }
+    });
+  }
+
+  private initBackgroundAudioKeeper() {
+    if (typeof window === "undefined" || this.bgAudioKeeper) return;
+    try {
+      this.bgAudioKeeper = new Audio();
+      // 1-second silent stereo WAV
+      this.bgAudioKeeper.src =
+        "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==";
+      this.bgAudioKeeper.loop = true;
+      this.bgAudioKeeper.volume = 0.001;
+    } catch {}
+  }
+
+  private startBackgroundAudioKeeper() {
+    if (!this.bgAudioKeeper) this.initBackgroundAudioKeeper();
+    if (this.bgAudioKeeper) {
+      this.bgAudioKeeper.play().catch(() => {});
+    }
+  }
+
+  private stopBackgroundAudioKeeper() {
+    if (this.bgAudioKeeper) {
+      try {
+        this.bgAudioKeeper.pause();
+      } catch {}
     }
   }
 
@@ -109,13 +158,13 @@ class AudioEngine {
       container = document.createElement("div");
       container.id = "mezuc-yt-player-container";
       container.style.position = "fixed";
-      container.style.bottom = "-9999px";
-      container.style.left = "-9999px";
+      container.style.top = "0px";
+      container.style.left = "0px";
       container.style.width = "200px";
       container.style.height = "200px";
-      container.style.opacity = "0.01";
+      container.style.opacity = "0.001";
       container.style.pointerEvents = "none";
-      container.style.zIndex = "-99";
+      container.style.zIndex = "-9999";
       document.body.appendChild(container);
     }
 
@@ -152,12 +201,32 @@ class AudioEngine {
             // YT.PlayerState: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
             if (event.data === 0) {
               // Video Ended -> Advance to next track in queue
+              this.isRunning = false;
+              this.stopVisualizerPulse();
+              this.stopBackgroundAudioKeeper();
+              this.onPlayStateChangeCallback?.(false);
               this.onEndedCallback?.();
             } else if (event.data === 1) {
               this.isRunning = true;
               this.startVisualizerPulse();
+              this.startBackgroundAudioKeeper();
+              this.onPlayStateChangeCallback?.(true);
             } else if (event.data === 2) {
-              this.stopVisualizerPulse();
+              if (this.userPaused) {
+                this.isRunning = false;
+                this.stopVisualizerPulse();
+                this.stopBackgroundAudioKeeper();
+                this.onPlayStateChangeCallback?.(false);
+              } else {
+                // Browser/Chrome throttled or auto-paused playback on tab switch or minimize
+                // Keep playing and ensure audio keeper is running
+                try {
+                  if (this.ytPlayer && typeof this.ytPlayer.playVideo === "function") {
+                    this.ytPlayer.playVideo();
+                  }
+                } catch {}
+                this.startBackgroundAudioKeeper();
+              }
             }
           },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -198,10 +267,12 @@ class AudioEngine {
 
   public setCallbacks(
     onTimeUpdate: (time: number) => void,
-    onEnded: () => void
+    onEnded: () => void,
+    onPlayStateChange?: (isPlaying: boolean) => void
   ) {
     this.onTimeUpdateCallback = onTimeUpdate;
     this.onEndedCallback = onEnded;
+    this.onPlayStateChangeCallback = onPlayStateChange || null;
   }
 
   public setVolume(val: number) {
@@ -226,6 +297,7 @@ class AudioEngine {
   }
 
   public async play(track: Track, offsetSeconds: number = 0) {
+    this.userPaused = false;
     this.initContext();
     if (this.ctx && this.ctx.state === "suspended") {
       await this.ctx.resume();
@@ -235,12 +307,15 @@ class AudioEngine {
     this.pauseOffset = offsetSeconds;
     this.startTime = (this.ctx?.currentTime || 0) - offsetSeconds;
     this.isRunning = true;
+    this.startBackgroundAudioKeeper();
+    this.onPlayStateChangeCallback?.(true);
+    this.updateMediaSession(track, true);
 
     // Check if track has a YouTube video ID
-    const youtubeId =
+    let youtubeId =
       track.youtubeId ||
-      (track.id.startsWith("yt-") ? track.id.replace(/^yt-/, "") : null) ||
-      (track.source === "youtube" ? track.id : null);
+      (track.id.startsWith("yt-") && track.id.replace(/^yt-/, "").length >= 8 ? track.id.replace(/^yt-/, "") : null) ||
+      (track.source === "youtube" && track.id.length >= 8 && !track.id.startsWith("yt-") ? track.id : null);
 
     if (youtubeId && youtubeId.length >= 8) {
       this.currentSource = "youtube";
@@ -255,12 +330,35 @@ class AudioEngine {
       this.stopSynth();
       this.playHtml5Audio(track.audioUrl, offsetSeconds);
     } else {
-      // Procedural synthesizer fallback only if no stream or YouTube ID exists
-      this.currentSource = "synth";
-      if (this.ytPlayer && typeof this.ytPlayer.pauseVideo === "function") {
-        try { this.ytPlayer.pauseVideo(); } catch {}
+      // Dynamic fallback: resolve playable video ID via search so tracks never fail
+      let resolvedId: string | null = null;
+      try {
+        const query = `${track.title} ${track.artist}`.trim();
+        const res = await fetch(`/api/music/search?q=${encodeURIComponent(query)}&limit=1`);
+        if (res.ok) {
+          const data = await res.json();
+          const found = data.tracks?.[0];
+          if (found && found.youtubeId && found.youtubeId.length >= 8) {
+            resolvedId = found.youtubeId;
+            track.youtubeId = resolvedId || undefined;
+            track.id = found.id;
+          }
+        }
+      } catch {}
+
+      if (resolvedId && resolvedId.length >= 8) {
+        this.currentSource = "youtube";
+        if (this.audioElement) this.audioElement.pause();
+        this.stopSynth();
+        await this.playYouTubeVideo(resolvedId, offsetSeconds);
+      } else {
+        // Procedural synthesizer fallback only if all network and video lookups fail
+        this.currentSource = "synth";
+        if (this.ytPlayer && typeof this.ytPlayer.pauseVideo === "function") {
+          try { this.ytPlayer.pauseVideo(); } catch {}
+        }
+        this.startAmbientSynthesis(track, offsetSeconds);
       }
-      this.startAmbientSynthesis(track, offsetSeconds);
     }
 
     this.startTimeTracking();
@@ -291,6 +389,22 @@ class AudioEngine {
     if (!this.audioElement) {
       this.audioElement = new Audio();
       this.audioElement.crossOrigin = "anonymous";
+      this.audioElement.addEventListener("play", () => {
+        this.isRunning = true;
+        this.startBackgroundAudioKeeper();
+        this.onPlayStateChangeCallback?.(true);
+      });
+      this.audioElement.addEventListener("pause", () => {
+        this.isRunning = false;
+        this.stopBackgroundAudioKeeper();
+        this.onPlayStateChangeCallback?.(false);
+      });
+      this.audioElement.addEventListener("ended", () => {
+        this.isRunning = false;
+        this.stopBackgroundAudioKeeper();
+        this.onPlayStateChangeCallback?.(false);
+        this.onEndedCallback?.();
+      });
       if (this.ctx && this.filterNode) {
         this.audioSourceNode = this.ctx.createMediaElementSource(this.audioElement);
         this.audioSourceNode.connect(this.filterNode);
@@ -305,10 +419,6 @@ class AudioEngine {
         this.startAmbientSynthesis(this.currentTrack, offset);
       }
     });
-
-    this.audioElement.onended = () => {
-      this.onEndedCallback?.();
-    };
   }
 
   // Visualizer spectrum driver for YouTube playback
@@ -398,9 +508,16 @@ class AudioEngine {
   }
 
   public pause() {
+    this.userPaused = true;
     this.isRunning = false;
     this.stopSynth();
     this.stopVisualizerPulse();
+    this.stopBackgroundAudioKeeper();
+
+    if (this.timeTrackingInterval) {
+      clearInterval(this.timeTrackingInterval);
+      this.timeTrackingInterval = null;
+    }
 
     if (this.currentSource === "youtube" && this.ytPlayer && typeof this.ytPlayer.pauseVideo === "function") {
       try {
@@ -414,6 +531,56 @@ class AudioEngine {
     if (this.animFrameId) {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;
+    }
+
+    this.onPlayStateChangeCallback?.(false);
+    if (this.currentTrack) {
+      this.updateMediaSession(this.currentTrack, false);
+    }
+  }
+
+  public updateMediaSession(track: Track, isPlaying: boolean) {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.title,
+        artist: track.artist,
+        album: track.album || track.title,
+        artwork: [
+          { src: track.coverUrl, sizes: "512x512", type: "image/jpeg" },
+          { src: track.coverUrl, sizes: "256x256", type: "image/jpeg" },
+          { src: track.coverUrl, sizes: "96x96", type: "image/jpeg" },
+        ],
+      });
+
+      navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+    } catch (e) {
+      console.warn("MediaSession update error:", e);
+    }
+  }
+
+  public initMediaSessionHandlers(handlers: {
+    onPlay: () => void;
+    onPause: () => void;
+    onPrev: () => void;
+    onNext: () => void;
+    onSeek: (time: number) => void;
+  }) {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+
+    try {
+      navigator.mediaSession.setActionHandler("play", () => handlers.onPlay());
+      navigator.mediaSession.setActionHandler("pause", () => handlers.onPause());
+      navigator.mediaSession.setActionHandler("previoustrack", () => handlers.onPrev());
+      navigator.mediaSession.setActionHandler("nexttrack", () => handlers.onNext());
+      navigator.mediaSession.setActionHandler("seekto", (details) => {
+        if (details.seekTime !== undefined) {
+          handlers.onSeek(details.seekTime);
+        }
+      });
+    } catch (e) {
+      console.warn("MediaSession handler error:", e);
     }
   }
 
@@ -440,8 +607,12 @@ class AudioEngine {
 
   private startTimeTracking() {
     if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
+    if (this.timeTrackingInterval) {
+      clearInterval(this.timeTrackingInterval);
+      this.timeTrackingInterval = null;
+    }
 
-    const update = () => {
+    const tick = () => {
       if (!this.isRunning || !this.currentTrack) return;
 
       let currentSec = 0;
@@ -465,10 +636,23 @@ class AudioEngine {
       }
 
       this.onTimeUpdateCallback?.(currentSec);
-      this.animFrameId = requestAnimationFrame(update);
+    };
+
+    const update = () => {
+      tick();
+      if (this.isRunning) {
+        this.animFrameId = requestAnimationFrame(update);
+      }
     };
 
     this.animFrameId = requestAnimationFrame(update);
+
+    // Fallback interval for background tabs / minimized windows where requestAnimationFrame pauses
+    this.timeTrackingInterval = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden && this.isRunning) {
+        tick();
+      }
+    }, 1000);
   }
 
   public getFrequencyData(): Uint8Array {

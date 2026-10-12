@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getYouTubeAlbumDetails } from "@/lib/youtubeService";
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -11,7 +11,11 @@ export async function GET(
       return NextResponse.json({ error: "Missing album id" }, { status: 400 });
     }
 
-    const data = await getYouTubeAlbumDetails(id);
+    const { searchParams } = new URL(request.url);
+    const artist = searchParams.get("artist") || undefined;
+    const title = searchParams.get("title") || undefined;
+
+    const data = await getYouTubeAlbumDetails(id, artist, title);
     if (!data) {
       return NextResponse.json({ error: "Album not found" }, { status: 404 });
     }
